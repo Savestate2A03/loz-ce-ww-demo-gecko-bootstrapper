@@ -1,0 +1,361 @@
+# ====== RESTORATION OF SAVING NOTES ======
+# These are my notes for the restoration of
+# saving in TWW. They are the precursor to
+# the assembly for restoring saving.
+# =========================================
+
+# -----------------------------------------
+
+# FN: dMenu_Collect_c::_move()
+# ADDR:
+#   DEMO .. 801a4dd0
+#   TWW ... 801a55d0
+
+# Offset into function
+#   DEMO .. +0x12C -> 801a4efc
+#   TWW ... +0x12C -> 801a56fc (presumably)
+
+801a4efc: 28000007 # cmplwi r0, 7
+801a4f00: 4082000C # bne 801a4f0c
+801a4f04: b -> allow_pressing_save_on_quest_status
+801a4f08: 48000040 # b 801a4f48
+
+allow_pressing_save_on_quest_status:
+    li r0, 3
+    stb r0, 0x27ee(r31)
+    lwz r3, 0x2684(r31)
+    lis r0, 0x801d
+    ori r0, r0, 0x5880
+    mtctr r0
+    bctrl      # (call dMenu_save_c::initialize)
+    b 801a4f08 # after the injected branch
+
+# -----------------------------------------
+
+# FN: dScnName_c::create()
+# ADDR:
+#   DEMO .. 8022b264
+#   TWW ... 8022f9fc
+
+# Offset into function: 
+#   DEMO .. +0x74C -> 8022b9b0
+#   TWW ... +0x770 -> 8023016c
+
+8022b9b0: 60000000 # nop
+8022b9b4: 38000000 # li r0, 0x0
+8022b9b8: b restore_memory_card_creation_and_usage
+
+restore_memory_card_creation_and_usage:
+    lha r3, 0x8(r31)
+    cmpwi r3, 0xC
+    bne +0x14
+    stb r0, 0x554(r31)
+    stb r0, 0x556(r31)
+    stb r0, 0x557(r31)
+    b +0x1C
+    cmpwi r3, 0xD
+    bne +0x14
+    li r0, 0xA
+    stb r0, 0x554(r31)
+    li r0, 0x3
+    stb r0, 0x557(r31)
+    b 8022b9bc
+
+# -----------------------------------------
+
+# FN: mDoMemCd_Ctrl_c::update()
+# ADDR:
+#   DEMO .. 80018ed0 (stubbed, but still called @ 8000644c)
+#   TWW ... 80018ec8
+
+# DEMO ADDRESSES
+OSLockMutex ............................ 803019c0
+OSUnlockMutex .......................... 80301a9c
+OSSignalCond ........................... 80301d84
+EXIProbe ............................... 80305f68
+u32 mDoMemCd_Ctrl_c::getStatus(u32) .... 80019298
+
+CARD_NO_COMMAND  0
+CARD_RESTORE     1
+CARD_STORE       2
+CARD_FORMAT      3
+CARD_ATTACH      4
+CARD_DETACH      5
+
+SMALL DATA AREA (r13)
+    DEMO .. 803f97c0
+    TWW ... 803fe0e0
+
+Instance Variables:
+    mProbeStat .. +0x165A (unsigned byte)
+    mCommand .... +0x165C (signed word)
+    mMutex ...... +0x1664 (struct size 0x18)
+    mCond ....... +0x167C (struct size 0x8)
+
+Global Static Variables:
+    #if DEMO
+        /* 803a17e0 */ int mDoRst::mResetFlag; // returned by mDoRst::isReset()
+        /* 803a17e4 */ int mDoRst::mResetPrepare;
+        /* 803a17e8 */ int mDoRst::m3ButtonResetFlag;
+        /* 803a17ec */ int mDoRst::m3ButtonResetPort = -1;
+    #elif TWW
+        /* 803f6968 */ mDoRstData* mDoRst::mResetData; // points to 8040cfc0
+        // mResetData->mReset returned by mDoRst::isReset()
+    #endif
+
+# NEEDS TO BE IMPLEMENTED!
+# Note: the unknown variable is located at
+#       800030E3 in both retail and the demo.
+
+int CARDProbe(s32 chan) {
+    if (__gUnknown800030E3 & 0x80) {
+        return 0;
+    } else {
+        return EXIProbe(chan);
+    }
+}
+
+CARDProbe:
+    lis r0, 0x8000
+    lwz r0, 0x30E3(r0)
+    andi r0, r0, 0x80
+    cmpwi r0, 0
+    beq call_exi_probe
+    li r3, 0
+    blr
+call_exi_probe:
+    load r0, 0x80305f68
+    mtctr r0
+    bctr
+
+void mDoMemCd_Ctrl_c::update() {
+    if (mDoRst::isReset()) {
+        OSLockMutex(&mMutex);
+        mCommand = CARD_DETACH;
+        mProbeStat = 3;
+        OSUnlockMutex(&mMutex);
+        OSSignalCond(&mCond);
+    } else {
+        if (getStatus(0) != 14) {
+            if (CARDProbe(0) && getStatus(0) == 0) {
+                OSLockMutex(&mMutex);
+                mProbeStat = 0;
+                mCommand = CARD_ATTACH;
+                OSUnlockMutex(&mMutex);
+                OSSignalCond(&mCond);
+            } else if (!CARDProbe(0) && getStatus(0) != 0) {
+                OSLockMutex(&mMutex);
+                mProbeStat = 1;
+                mCommand = CARD_DETACH;
+                OSUnlockMutex(&mMutex);
+                OSSignalCond(&mCond);
+            }
+        }
+    }
+}
+
+mDoMemCd_Ctrl_c__update:
+    // TODO
+
+# -----------------------------------------
+
+# This comes right after changeExtraColor(i)
+# in dFile_select_c::setSaveData()
+#
+# 8018b6d0: mr r3, r28
+# https://github.com/zeldaret/tww/blob/c1513e97e57f13a37f1d6637d508b04da8490654/src/d/d_file_select.cpp#L3090
+#
+# We will be replacing it with a recreation
+# of functional code for this before jumping to
+# 8018b890 which is where the loop increment lies.
+
+# [REGISTERS]
+#   r27: instance (dFile_select_c)
+#   r28: pane[i]
+#   r29: data (0x157 is a byte)
+#   r31: g_fsHIO (field_0x54 is a float)
+# [STACK]
+#   size: 0x20(sp)
+#     .mSizeX 0x20(sp)
+#     .mSizeY 0x24(sp)
+# [FUNCTIONS]
+#   fopMsgM_paneScaleXY .... 8003b690
+#   strcpy ................. 80329788
+#   fopMsgM_paneTrans ...... 8003b5c8
+#   OSTicksToCalendarTime .. 80305384
+#   sprintf ................ 803273b0
+# [INLINED]
+#   J2DTextBox
+#     void setFontSize(f32 sizeX, f32 sizeY) {
+#         mFontSizeX = sizeX > 0.0f ? sizeX : 0.0f;
+#         mFontSizeY = sizeY > 0.0f ? sizeY : 0.0f;
+#     }
+#     void setFontSize(TFontSize size) {
+#         setFontSize(size.mSizeX, size.mSizeY);
+#     }
+# [STRUCTS]
+#   pane[i] is fopMsgM_pane_class
+#   struct fopMsgM_pane_class {
+#       /* 0x00 */ J2DPane* pane;
+#       /* 0x04 */ fopMsgM_f2d_class mPosTopLeftOrig;
+#       /* 0x0C */ fopMsgM_f2d_class mPosTopLeft;
+#       /* 0x14 */ fopMsgM_f2d_class mPosCenterOrig;
+#       /* 0x1C */ fopMsgM_f2d_class mPosCenter;
+#       /* 0x24 */ fopMsgM_f2d_class mSizeOrig;
+#       /* 0x2C */ fopMsgM_f2d_class mSize;
+#       /* 0x34 */ u8 mInitAlpha;
+#       /* 0x35 */ u8 mNowAlpha;
+#       /* 0x36 */ s16 mUserArea;
+#   }; // Size: 0x38
+#   J2DTextBox:
+#     /* 0xE8 */ f32 mFontSizeX;
+#     /* 0xEC */ f32 mFontSizeY;
+# [INSTANCE VARIABLES]
+#   /* 0x38E0 */ J2DTextBox::TFontSize field_0x38e0;
+#   /* 0x38E8 */ char* field_0x38e8[3];
+#   /* 0x38F4 */ char* field_0x38f4[3];
+#   /* 0x3900 */ char* field_0x3900[3];
+#   /* 0x3914 */ u8 field_0x3914[3];
+#   /* 0x3917 */ u8 field_0x3917[3];
+
+if (data[0x157] == 0) {
+    // slot is empty
+    fopMsgM_paneScaleXY(pane[i], g_fsHIO.field_0x54);
+
+    size.mSizeX = field_0x38e0.mSizeX * g_fsHIO.field_0x54;
+    size.mSizeY = field_0x38e0.mSizeY * g_fsHIO.field_0x54;
+
+    strcpy(field_0x38f4[i], "New Game");
+
+    ((J2DTextBox*)pane[i]->pane)->setFontSize(field_0x38e0);
+
+    fopMsgM_paneTrans(
+        pane[i],
+        pane[i]->mPosTopLeftOrig.x - pane[i]->mPosTopLeft.x,
+        pane[i]->mPosTopLeftOrig.y - pane[i]->mPosTopLeft.y
+            + g_fsHIO.field_0x58
+    );
+
+    strcpy(field_0x3900[i], "");
+
+    field_0x3914[i] = 1;
+} else {
+    // slot is not empty
+    strcpy(field_0x38f4[i], (char*)&data[0x157]);
+
+    OSCalendarTime time;
+    OSTicksToCalendarTime(*(u64*)&data[0x18], &time);
+
+    sprintf(
+        field_0x3900[i],
+        "%02d/%02d/%d %02d:%02d:%02d",
+        time.month + 1,
+        time.day_of_month,
+        time.year,
+        time.hours,
+        time.minutes,
+        time.seconds
+    );
+
+    field_0x3914[i] = 0;
+}
+
+field_0x3917[i] = 0;
+
+# ========== ORIGINAL CODE BELOW ==========
+# Thanks to SuperDude88 for sending it my
+# way, it is the basis for the above work!
+# =========================================
+
+$Restore Saving [SuperDude88]
+
+041A4EFC 28000007 # Replace cmplwi r0, 6 -> cmplwi r0, 7
+041A4F00 4082000C # Replace beq 801a4f48 -> bne 801a4f0c
+041A4F08 48000040 # Replace beq 801a4f48 -> b 801a4f48
+C21A4F04 00000004 # Inject a few more instructions (Allow pressing the save button on the Quest Status screen)
+38000003 981F27EE # li r0, 3 / stb r0, 0x27EE(r31)
+807F2784 3C00801D # lwz r3, 0x2684(r31) / lis r0, 0x801D
+60005880 7C0903A6 # ori r0, r0, 0x5880 / mtctr r0
+4E800421 00000000 # bctrl (call dMenu_save_c::initialize)
+
+0422B9B0 60000000 # Replace stb r0, 0x554(r31) -> nop
+0422B9B4 38000000 # Replace li r0, 0x4 -> li r0, 0x0
+C222B9B8 00000007 # Inject a few more instructions (Restore memory card creation/usage on opening scene)
+A87F0008 2C03000C # lha r3, 0x8(r31) / cmpwi r3, 0xC
+40820014 981F0554 # bne +0x14 / stb r0, 0x554(r31)
+981F0556 981F0557 # stb r0, 0x556(r31) / stb r0, 0x557(r31)
+4800001C 2C03000D # b +0x1C / cmpwi r3, 0xD
+40820014 3800000A # bne +0x14 / li r0, 0xA
+981F0554 38000003 # stb r0, 0x554(r31) / li r0, 0x3
+981F0557 00000000 # stb r0, 0x557(r31)
+
+C2018ed0 0000003E # (Restore mDoMemCd_Ctrl_c::update (stubbed in the demo))
+9421fff0 7c0802a6 # (mDoMemCd_Ctrl_c::update begin) stwu r1,local_10(r1) / mfspr r0,LR
+90010014 93e1000c # stw r0,local_res4(r1) / stw r31,local_4(r1)
+7c7f1b78 3C80803A # or r31,this,this / lis r4, 0x803A
+388417E0 60000000 # addi r4, r4, 0x17E0 / nop
+80040000 2c000000 # lwz r0,0x0(r4) / cmpwi r0,0x0
+41820054 387f1664 # beq +0x54 / addi this,r31,0x1664
+3c008030 600019c0 #	lis r0, 0x8030 / ori r0, r0, 0x19C0
+7c0903a6 4e800421 #	mtctr r0 / bctrl (bl OSLockMutex)
+38000005 901f165c # li r0,0x5 / stw r0,0x165c(r31)
+38000003 981f165a # li r0,0x3 / stb r0,0x165a(r31)
+387f1664 3c008030 # addi this,r31,0x1664 / lis r0, 0x8030
+60001a9c 7c0903a6 #	ori r0, r0, 0x1A9C / mtctr r0
+4e800421 387f167c #	bctrl (OSUnlockMutex) / addi this,r31,0x167c
+3c008030 60001D84 #	lis r0, 0x8030 / ori r0, r0, 0x1D84
+7c0903a6 4e800421 #	mtctr r0 / bctrl (bl OSSignalCond)
+4800011C 38800000 # b +0x11C / li r4,0x0
+3c008001 60009298 #	lis r0, 0x8001 / ori r0, r0, 0x9298
+7c0903a6 4e800421 #	mtctr r0 / bctrl (bl mDoMemCd_Ctrl_c::getStatus)
+2803000e 41820100 # cmplwi this,0xe / beq +0x100
+38600000 4800010D # li this,0x0 / bl +0x110 (CARDProbe)
+2c030000 41820074 # cmpwi this,0x0 / beq +0x74
+7fe3fb78 38800000 # or this,r31,r31 / li r4,0x0
+3c008001 60009298 #	lis r0, 0x8001 / ori r0, r0, 0x9298
+7c0903a6 4e800421 #	mtctr r0 / bctrl (mDoMemCd_Ctrl_c::getStatus)
+28030000 40820054 # cmplwi this,0x0 / bne +0x54
+387f1664 3c008030 # addi this,r31,0x1664 / lis r0, 0x8030
+600019c0 7c0903a6 #	ori r0, r0, 0x19C0 / mtctr r0
+4e800421 38000000 #	bctrl (OSLockMutex) / li r0,0x0
+981f165a 38000004 # stb r0,0x165a(r31) / li r0,0x4
+901f165c 387f1664 # stw r0,0x165c(r31) / addi this,r31,0x1664
+3c008030 60001a9c #	lis r0, 0x8030 / ori r0, r0, 0x1A9C
+7c0903a6 4e800421 #	mtctr r0 / bctrl (OSUnlockMutex)
+387f167c 3c008030 # addi this,r31,0x167c / lis r0, 0x8030
+60001D84 7c0903a6 #	ori r0, r0, 0x1D84 / mtctr r0
+4e800421 48000080 #	bctrl (OSSignalCond) / b +0x84
+38600000 4800008D # li this,0x0 / bl +0x90 (CARDProbe)
+2c030000 40820070 # cmpwi this,0x0 / bne +0x70
+7fe3fb78 38800000 # or this,r31,r31 / li r4,0x0
+3c008001 60009298 #	lis r0, 0x8001 / ori r0, r0, 0x9298
+7c0903a6 4e800421 #	mtctr r0 / bctrl (mDoMemCd_Ctrl_c::getStatus)
+28030000 41820050 # cmplwi this,0x0 / beq +0x50
+387f1664 3c008030 # addi this,r31,0x1664 / lis r0, 0x8030
+600019c0 7c0903a6 #	ori r0, r0, 0x19C0 / mtctr r0
+4e800421 38000001 #	bctrl (OSLockMutex) / li r0,0x1
+981f165a 38000005 # stb r0,0x165a(r31) / li r0,0x5
+901f165c 387f1664 # stw r0,0x165c(r31) / addi this,r31,0x1664
+3c008030 60001a9c #	lis r0, 0x8030 / ori r0, r0, 0x1A9C
+7c0903a6 4e800421 #	mtctr r0 / bctrl (bl OSUnlockMutex)
+387f167c 3c008030 # addi this,r31,0x167c / lis r0, 0x8030
+60001D84 7c0903a6 #	ori r0, r0, 0x1D84 / mtctr r0
+4e800421 83e1000c #	bctrl (bl OSSignalCond) / lwz r31,local_4(r1)
+80010014 7c0803a6 # lwz r0,local_res4(r1) / mtspr LR,r0
+38210010 4e800020 # addi r1,r1,0x10 / blr
+7c0802a6 3c808000 # (CARDProbe begin) mfspr r0,LR / lis r4=>DAT_80000000,-0x8000
+90010004 9421fff8 # stw r0,local_res4(r1) / stwu r1,local_8(r1)
+880430e3 54000631 # lbz r0,offset DAT_800030e3(r4) / rlwinm. r0,r0,0x0,0x18,0x18
+4182000c 38600000 # beq LAB_8031d424 / li card_slot,0x0
+48000008 3c008030 # b LAB_8031d428 / lis r0, 0x8030
+60005f68 7c0903a6 # ori r0, r0, 0x5F68 / mtctr r0
+4e800421 8001000c # bctrl (bl EXIProbe) / lwz r0,local_res4(r1)
+38210008 7c0803a6 # addi r1,r1,0x8 / mtspr LR,r0
+4e800020 00000000 # blr
+
+0418b798 60000000 # Replace stb r0, 0x3914(r3) -> nop
+C218B6D0 00000004 # Properly mark save slots as empty in dFile_select_c::setSaveData (this is a partial, sketchy patch just to get it working -- does not fully restore the original game's code)
+881D0157 28000000 # lbz r0, 0x157(r29) / cmplwi r0, 0x0
+40820010 38000001 # bne +0x10 / li r0, 1
+7C7BF214 98033914 # add r3, r27, r30 / stb r0, 0x3914(r3)
+7F83E378 00000000 # mr r3, r28
